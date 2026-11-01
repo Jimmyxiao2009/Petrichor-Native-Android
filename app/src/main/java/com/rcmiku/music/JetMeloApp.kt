@@ -1,0 +1,109 @@
+package com.rcmiku.music
+
+import android.app.Application
+import androidx.datastore.preferences.core.edit
+import androidx.media3.common.util.UnstableApi
+import coil3.ImageLoader
+import coil3.PlatformContext
+import coil3.SingletonImageLoader
+import coil3.disk.DiskCache
+import coil3.disk.directory
+import coil3.memory.MemoryCache
+import coil3.request.CachePolicy
+import coil3.request.crossfade
+import com.rcmiku.music.constants.ncmCookieKey
+import com.rcmiku.music.constants.unblockBaseUrlKey
+import com.rcmiku.music.playback.PlayerController
+import com.rcmiku.music.utils.SongListUtil
+import com.rcmiku.music.utils.UserAgentUtil
+import com.rcmiku.music.utils.dataStore
+import com.rcmiku.ncmapi.api.UNBLOCK_BASE_URL
+import com.rcmiku.ncmapi.utils.CookieKeys
+import com.rcmiku.ncmapi.utils.CookieProvider
+import com.rcmiku.ncmapi.utils.FileProvider
+import com.rcmiku.ncmapi.utils.UserAgentProvider
+import com.rcmiku.ncmapi.utils.json
+import dagger.hilt.android.HiltAndroidApp
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
+
+@HiltAndroidApp
+class JetMeloApp : Application(), SingletonImageLoader.Factory {
+
+    private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    @androidx.annotation.OptIn(UnstableApi::class)
+    override fun onCreate() {
+        super.onCreate()
+        applicationScope.launch {dataStore.data.collect{com.rcmiku.music.utils.PreferenceMemory.value=it}}
+        PlayerController.init(this)
+        FileProvider.init(cacheDir.resolve("ncm"))
+        SongListUtil.init(filesDir.resolve("playlist"))
+        UserAgentProvider.init(UserAgentUtil.DEFAULT_USER_AGENT)
+        applicationScope.launch {
+            var previousAccount:String?=null
+            UserAgentProvider.init(UserAgentUtil.DEFAULT_USER_AGENT)
+            dataStore.data
+                .map { it[ncmCookieKey] }
+                .distinctUntilChanged()
+                .collect { ncmCookie ->
+                    val cookieMap = ncmCookie
+                        ?.takeIf { it.isNotEmpty() }
+                        ?.let { runCatching { json.decodeFromString<Map<String, String>>(it) }.getOrNull() }
+                    val account=cookieMap?.get(CookieKeys.MUSIC_U).orEmpty()
+                    if(previousAccount!=null&&previousAccount!=account){
+                        com.rcmiku.ncmapi.api.ReadResponseCache.clear()
+                        com.rcmiku.music.utils.FavoriteSongIdsUtil.updateSongIds(this@JetMeloApp,emptyList())
+                        dataStore.edit { prefs -> listOf("cachedUserInfo","cachedFavoriteSong","cachedUserPlaylists","cachedRecommendSongs","cachedRecommendPlaylist").forEach{prefs.remove(androidx.datastore.preferences.core.stringPreferencesKey(it))} }
+                    }
+                    previousAccount=account
+                    if (cookieMap?.containsKey(CookieKeys.MUSIC_U) == true) {
+                        CookieProvider.init(cookieMap)
+                    } else {
+                        CookieProvider.clear()
+                    }
+                }
+        }
+        applicationScope.launch {
+            dataStore.data
+                .map { prefs ->
+                    prefs[unblockBaseUrlKey]
+                }
+                .distinctUntilChanged()
+                .collect { unblockUrl ->
+                    if (!unblockUrl.isNullOrEmpty()) UNBLOCK_BASE_URL = unblockUrl
+                }
+        }
+    }
+
+    override fun onTerminate() {
+        applicationScope.cancel()
+        super.onTerminate()
+    }
+
+    override fun newImageLoader(context: PlatformContext): ImageLoader {
+        return ImageLoader.Builder(context)
+            .crossfade(true)
+            .memoryCachePolicy(CachePolicy.ENABLED)
+            .memoryCache {
+                MemoryCache.Builder()
+                    .maxSizeBytes(64 * 1024 * 1024L)
+                    .strongReferencesEnabled(true)
+                    .build()
+            }
+            .diskCachePolicy(CachePolicy.ENABLED)
+            .diskCache {
+                DiskCache.Builder()
+                    .maxSizeBytes(512 * 1024 * 1024L)
+                    .directory(cacheDir.resolve("coil"))
+                    .build()
+            }
+            .build()
+    }
+
+}

@@ -1,0 +1,95 @@
+package com.rcmiku.music
+
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.core.content.ContextCompat
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.media3.common.util.UnstableApi
+import com.rcmiku.music.extensions.init
+import com.rcmiku.music.playback.PlayerController
+import com.rcmiku.music.playback.PlayerState
+import com.rcmiku.music.playback.state
+import com.rcmiku.music.ui.screen.MainScreen
+import com.rcmiku.music.ui.theme.JetMeloTheme
+import dagger.hilt.android.AndroidEntryPoint
+
+@UnstableApi
+@AndroidEntryPoint
+class MainActivity : ComponentActivity() {
+
+    companion object {
+        private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 1001
+    }
+
+    private lateinit var playerController: PlayerController
+    private var playerState by mutableStateOf<PlayerState?>(null)
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+        requestNotificationPermissionIfNeeded()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            window.isNavigationBarContrastEnforced = false
+        }
+        playerController = PlayerController
+        setContent {
+            val controller=playerController.controller
+            LaunchedEffect(controller){
+                controller?.let {
+                    if(playerState?.player!==it){
+                        playerState?.dispose()
+                        it.init(applicationContext)
+                        playerState=it.state(applicationContext)
+                    }
+                }
+            }
+            JetMeloTheme {
+                CompositionLocalProvider(
+                    LocalPlayerController provides playerController,
+                    LocalPlayerState provides playerState
+                ) {
+                    MainScreen()
+                }
+            }
+        }
+    }
+
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(
+                arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                NOTIFICATION_PERMISSION_REQUEST_CODE
+            )
+        }
+    }
+
+    override fun onDestroy() {
+        playerState?.dispose()
+        playerState = null
+        super.onDestroy()
+    }
+
+}
+
+val LocalPlayerController = staticCompositionLocalOf<PlayerController> {
+    error("No PlayerController provided")
+}
+
+val LocalPlayerState = staticCompositionLocalOf<PlayerState?> {
+    error("No PlayerState provided")
+}

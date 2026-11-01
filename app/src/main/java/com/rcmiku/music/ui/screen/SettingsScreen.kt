@@ -1,0 +1,465 @@
+package com.rcmiku.music.ui.screen
+
+import android.os.Build
+import androidx.datastore.preferences.core.edit
+import com.rcmiku.music.utils.dataStore
+import android.content.Intent
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.navigation.NavHostController
+import androidx.media3.common.util.UnstableApi
+import com.rcmiku.music.R
+import com.rcmiku.music.constants.SettingItemCorner
+import com.rcmiku.music.constants.SettingItemHeight
+import com.rcmiku.music.constants.SettingItemSubCorner
+import com.rcmiku.music.constants.audioCacheMaxSizeKey
+import com.rcmiku.music.constants.audioQualityKey
+import com.rcmiku.music.constants.autoSkipNextOnErrorKey
+import com.rcmiku.music.constants.dynamicThemeColorKey
+import com.rcmiku.music.constants.ncmCookieKey
+import com.rcmiku.music.constants.themeSeedColorKey
+import com.rcmiku.music.constants.unblockBaseUrlKey
+import com.rcmiku.music.constants.use40DpIconKey
+import com.rcmiku.music.ui.components.Dialog
+import com.rcmiku.music.ui.components.CacheManagementDialog
+import com.rcmiku.music.ui.components.SongQualityDialog
+import com.rcmiku.music.ui.components.ThemeSeedDialog
+import com.rcmiku.music.ui.components.UrlEditDialog
+import com.rcmiku.music.ui.components.formatCacheSize
+import com.rcmiku.music.ui.icons.AudioLines
+import com.rcmiku.music.ui.icons.Dns
+import com.rcmiku.music.ui.icons.Github
+import com.rcmiku.music.ui.icons.GraphicEq
+import com.rcmiku.music.ui.icons.Login
+import com.rcmiku.music.ui.icons.Logout
+import com.rcmiku.music.ui.icons.PlayPause
+import com.rcmiku.music.ui.icons.SkipNext
+import com.rcmiku.music.ui.icons.UserRound
+import com.rcmiku.music.ui.icons.VipUser
+import com.rcmiku.music.ui.navigation.Screen
+import com.rcmiku.music.ui.theme.AppThemeSeed
+import com.rcmiku.music.playback.AudioCache
+import com.rcmiku.music.utils.getItemShape
+import com.rcmiku.music.utils.rememberEnumPreference
+import com.rcmiku.music.utils.rememberPreference
+import com.rcmiku.ncmapi.api.player.SongLevel
+import com.rcmiku.ncmapi.utils.DebugLog
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+@androidx.annotation.OptIn(UnstableApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SettingsScreen(navController: NavHostController) {
+    val uriHandler = LocalUriHandler.current
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+
+    var use40DpIcon by rememberPreference(use40DpIconKey, false)
+    var audioQuality by rememberEnumPreference(audioQualityKey, defaultValue = SongLevel.LOSSLESS)
+    var useDynamicThemeColor by rememberPreference(dynamicThemeColorKey, true)
+    var themeSeed by rememberEnumPreference(themeSeedColorKey, defaultValue = AppThemeSeed.PURPLE)
+    var autoSkipNextOnError by rememberPreference(autoSkipNextOnErrorKey, false)
+    var ncmCookie by rememberPreference(ncmCookieKey, "")
+    var unblockBaseUrl by rememberPreference(unblockBaseUrlKey, "https://unm-server.focalors.ltd")
+    var audioCacheMaxSize by rememberPreference(
+        audioCacheMaxSizeKey,
+        AudioCache.DEFAULT_MAX_SIZE_BYTES,
+    )
+    var audioCacheSpace by remember { mutableStateOf(0L) }
+
+    var showQualityDialog by remember { mutableStateOf(false) }
+    var showThemeSeedDialog by remember { mutableStateOf(false) }
+    var showUnblockUrlDialog by remember { mutableStateOf(false) }
+    var showCacheDialog by remember { mutableStateOf(false) }
+    var logout by rememberSaveable { mutableStateOf(false) }
+
+    val dynamicColorAvailable = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+    val appearanceTitle = "\u5916\u89c2\u8bbe\u7f6e"
+    val appearanceSubtitle = when {
+        useDynamicThemeColor && dynamicColorAvailable -> "\u58c1\u7eb8\u52a8\u6001\u53d6\u8272"
+        useDynamicThemeColor -> "\u58c1\u7eb8\u52a8\u6001\u53d6\u8272 (\u5f53\u524d\u4e0d\u53ef\u7528)"
+        else -> "\u4e3b\u9898\u8272: ${themeSeed.label}"
+    }
+
+    suspend fun refreshCacheSpace() {
+        audioCacheSpace = withContext(Dispatchers.IO) {
+            AudioCache.cacheSpace(context.applicationContext)
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        refreshCacheSpace()
+    }
+
+    val baseSettingItems = listOf(
+        SettingItemData(
+            title = appearanceTitle,
+            subtitle = appearanceSubtitle,
+            imageVector = GraphicEq,
+            onClick = { showThemeSeedDialog = true }
+        ),
+        SettingItemData(
+            title = stringResource(if (ncmCookie.isNotEmpty()) R.string.logout else R.string.login),
+            imageVector = if (ncmCookie.isNotEmpty()) Logout else Login,
+            onClick = {
+                if (ncmCookie.isNotEmpty()) {
+                    logout = true
+                } else {
+                    navController.navigate(Screen.Login.route)
+                }
+            }
+        ),
+        SettingItemData(
+            title = stringResource(R.string.command_button),
+            subtitle = stringResource(R.string.command_button_subtitle),
+            imageVector = PlayPause,
+            trailingContent = {
+                Switch(
+                    checked = use40DpIcon,
+                    onCheckedChange = { use40DpIcon = it }
+                )
+                Spacer(Modifier.width(12.dp))
+            },
+            onClick = { use40DpIcon = !use40DpIcon }
+        ),
+        SettingItemData(
+            title = stringResource(R.string.audio_quality),
+            subtitle = when (audioQuality) {
+                SongLevel.STANDARD -> stringResource(R.string.standard)
+                SongLevel.HIGHER -> stringResource(R.string.higer)
+                SongLevel.EXHIGH -> stringResource(R.string.exhigh)
+                SongLevel.LOSSLESS -> stringResource(R.string.lossless)
+                SongLevel.HIRES -> stringResource(R.string.hi_res)
+            },
+            imageVector = GraphicEq,
+            onClick = { showQualityDialog = true }
+        ),
+        SettingItemData(
+            title = stringResource(R.string.cache_management),
+            subtitle = stringResource(
+                R.string.cache_summary,
+                formatCacheSize(audioCacheSpace),
+                formatCacheSize(audioCacheMaxSize),
+            ),
+            imageVector = AudioLines,
+            onClick = {
+                showCacheDialog = true
+                coroutineScope.launch { refreshCacheSpace() }
+            },
+        ),
+        SettingItemData(
+            title = stringResource(R.string.auto_skip),
+            imageVector = SkipNext,
+            trailingContent = {
+                Switch(
+                    checked = autoSkipNextOnError,
+                    onCheckedChange = { autoSkipNextOnError = it }
+                )
+                Spacer(Modifier.width(12.dp))
+            },
+            onClick = { autoSkipNextOnError = !autoSkipNextOnError }
+        ),
+        SettingItemData(
+            title = stringResource(R.string.unblock_server),
+            subtitle = unblockBaseUrl,
+            imageVector = Dns,
+            onClick = { showUnblockUrlDialog = true }
+        )
+    )
+
+    val settingsItems = listOf(
+        SettingItemData(
+            title = "基于 Mooic · kid-depress",
+            imageVector = UserRound,
+            onClick = { uriHandler.openUri("https://github.com/kid-depress") }
+        ),
+        SettingItemData(
+            title = "Petrichor 2.0.0 · GPL-3.0",
+            imageVector = VipUser,
+            onClick = { uriHandler.openUri("https://www.gnu.org/licenses/gpl-3.0.html") }
+        ),
+        SettingItemData(
+            title = "Mooic 上游源码",
+            imageVector = Github,
+            onClick = { uriHandler.openUri("https://github.com/kid-depress/Mooic") }
+        ),
+        SettingItemData(
+            title = stringResource(R.string.export_debug_log),
+            imageVector = Dns,
+            onClick = {
+                val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_SUBJECT, context.getString(R.string.debug_log_subject))
+                    putExtra(
+                        Intent.EXTRA_TEXT,
+                        DebugLog.export().ifBlank { context.getString(R.string.no_debug_log) }
+                    )
+                }
+                context.startActivity(Intent.createChooser(shareIntent, null))
+            }
+        )
+    )
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(stringResource(R.string.settings)) },
+                navigationIcon = {
+                    IconButton(onClick = { navController.navigateUp() }) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = null
+                        )
+                    }
+                },
+            )
+        }
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier.padding(horizontal = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+            contentPadding = padding
+        ) {
+            item {
+                Text(
+                    stringResource(R.string.basic_settings),
+                    modifier = Modifier.padding(12.dp),
+                    style = MaterialTheme.typography.titleSmall
+                )
+            }
+
+            itemsIndexed(baseSettingItems) { index, item ->
+                val shape = getItemShape(
+                    prevItem = baseSettingItems.getOrNull(index - 1),
+                    nextItem = baseSettingItems.getOrNull(index + 1),
+                    corner = SettingItemCorner,
+                    subCorner = SettingItemSubCorner,
+                )
+
+                SettingCard(
+                    title = item.title,
+                    description = item.subtitle,
+                    shape = shape,
+                    imageVector = item.imageVector,
+                    onClick = item.onClick,
+                    trailingContent = item.trailingContent
+                )
+            }
+
+            item {
+                Text(
+                    stringResource(R.string.about),
+                    modifier = Modifier.padding(12.dp),
+                    style = MaterialTheme.typography.titleSmall
+                )
+            }
+
+            itemsIndexed(settingsItems) { index, item ->
+                val shape = getItemShape(
+                    prevItem = settingsItems.getOrNull(index - 1),
+                    nextItem = settingsItems.getOrNull(index + 1),
+                    corner = SettingItemCorner,
+                    subCorner = SettingItemSubCorner,
+                )
+                SettingCard(
+                    title = item.title,
+                    description = item.subtitle,
+                    imageVector = item.imageVector,
+                    shape = shape,
+                    onClick = item.onClick,
+                    trailingContent = item.trailingContent,
+                )
+            }
+        }
+    }
+
+    if (showQualityDialog) {
+        SongQualityDialog(
+            currentLevel = audioQuality,
+            onDismiss = { showQualityDialog = false },
+            onQualitySelected = { audioQuality = it }
+        )
+    }
+
+    if (showThemeSeedDialog) {
+        ThemeSeedDialog(
+            currentSeed = themeSeed,
+            dynamicColorAvailable = dynamicColorAvailable,
+            dynamicColorEnabled = useDynamicThemeColor,
+            onDismiss = { showThemeSeedDialog = false },
+            onDynamicColorChange = { useDynamicThemeColor = it },
+            onSeedSelected = { themeSeed = it }
+        )
+    }
+
+    if (showCacheDialog) {
+        CacheManagementDialog(
+            cacheSpaceBytes = audioCacheSpace,
+            currentMaxBytes = audioCacheMaxSize,
+            onMaxSizeSelected = { maxSizeBytes ->
+                audioCacheMaxSize = maxSizeBytes
+                coroutineScope.launch {
+                    withContext(Dispatchers.IO) {
+                        AudioCache.setMaxSize(context.applicationContext, maxSizeBytes)
+                    }
+                    refreshCacheSpace()
+                }
+            },
+            onClearCache = {
+                coroutineScope.launch {
+                    withContext(Dispatchers.IO) {
+                        AudioCache.clear(context.applicationContext)
+                    }
+                    refreshCacheSpace()
+                }
+            },
+            onDismiss = { showCacheDialog = false },
+        )
+    }
+
+    if (logout) {
+        Dialog(
+            onConfirmation = {
+                coroutineScope.launch {
+                    com.rcmiku.ncmapi.utils.CookieProvider.clear()
+                    com.rcmiku.ncmapi.api.ReadResponseCache.clear()
+                    context.dataStore.edit{it[com.rcmiku.music.constants.ncmCookieKey]="";it[com.rcmiku.music.constants.userIdKye]=0L}
+                }
+                logout = false
+            },
+            onDismissRequest = {
+                logout = false
+            },
+            dialogTitle = stringResource(R.string.logout),
+        )
+    }
+
+    if (showUnblockUrlDialog) {
+        UrlEditDialog(
+            title = stringResource(R.string.unblock_server),
+            currentUrl = unblockBaseUrl,
+            defaultUrl = "https://unm-server.focalors.ltd",
+            onDismiss = { showUnblockUrlDialog = false },
+            onConfirm = { unblockBaseUrl = it }
+        )
+    }
+}
+
+@Composable
+fun SettingCard(
+    title: String,
+    description: String? = null,
+    imageVector: ImageVector,
+    shape: Shape,
+    onClick: (() -> Unit)? = null,
+    trailingContent: @Composable (() -> Unit)? = null,
+) {
+    Card(
+        shape = shape,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
+    ) {
+        SettingItem(
+            imageVector = imageVector,
+            title = title,
+            description = description,
+            onClick = onClick,
+            trailingContent = trailingContent
+        )
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun SettingItem(
+    imageVector: ImageVector,
+    title: String,
+    description: String? = null,
+    onClick: (() -> Unit)? = null,
+    trailingContent: @Composable (() -> Unit)? = null
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = SettingItemHeight)
+            .combinedClickable(onClick = { onClick?.invoke() }),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Image(
+            imageVector = imageVector,
+            contentDescription = null,
+            colorFilter = ColorFilter.tint(MaterialTheme.colorScheme.surfaceTint),
+            modifier = Modifier.padding(start = 12.dp)
+        )
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(12.dp),
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                overflow = TextOverflow.Ellipsis,
+                maxLines = 1
+            )
+            if (description != null) {
+                Text(
+                    text = description,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.secondary
+                )
+            }
+        }
+        trailingContent?.invoke()
+    }
+}
+
+data class SettingItemData(
+    val title: String,
+    val subtitle: String? = null,
+    val imageVector: ImageVector,
+    val onClick: (() -> Unit)? = null,
+    val trailingContent: @Composable (() -> Unit)? = null
+)
